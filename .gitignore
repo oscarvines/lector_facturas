@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+
+# Archivos temporales
+*.xlsx
+*.log
+__pycache__/
+.env
+split_temp/
+~$*
+
