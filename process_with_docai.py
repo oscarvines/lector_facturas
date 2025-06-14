@@ -9,7 +9,7 @@ PROJECT_ID = "772723410003"           # Reemplaza con tu ID de proyecto
 LOCATION = "us"                       # Zona donde esté tu Processor
 PROCESSOR_ID = "dff8117c158462cd"     # ID de tu Invoice Processor
 BUCKET_NAME = "facturasclientes"      # Nombre del bucket con los PDFs
-OUTPUT_DIR = "output_docai_v3"        # Carpeta local para los Excel
+OUTPUT_DIR = "output_docai"        # Carpeta local para los Excel
 
 docai_client = documentai.DocumentProcessorServiceClient()
 name = f"projects/{PROJECT_ID}/locations/{LOCATION}/processors/{PROCESSOR_ID}"

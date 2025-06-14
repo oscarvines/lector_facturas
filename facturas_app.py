@@ -9,7 +9,7 @@ PROJECT_ID = "772723410003"
 LOCATION = "us"
 PROCESSOR_ID = "dff8117c158462cd"
 BUCKET_NAME = "facturasclientes"
-OUTPUT_DIR = "output_docai_v3"
+OUTPUT_DIR = "output_docai"
 
 # Inicializar clientes
 docai_client = documentai.DocumentProcessorServiceClient()
