@@ -10,6 +10,7 @@ LOCATION = "us"
 PROCESSOR_ID = "dff8117c158462cd"
 BUCKET_NAME = "facturasclientes"
 OUTPUT_DIR = "output_docai"
+ERROR_LOG = "errores_procesamiento.csv"
 
 # Inicializar clientes
 docai_client = documentai.DocumentProcessorServiceClient()
@@ -19,6 +20,8 @@ bucket = storage_client.bucket(BUCKET_NAME)
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# Registro de errores
+errores = []
 
 # --- FUNCIONES AUXILIARES ---
 
@@ -36,17 +39,24 @@ def parse_float_es(valor):
         return 0.0
 
 def extraer_del_texto_libre(texto):
-    base = buscar_en_texto(texto, r"base\s+imponible\s*[^\d]*(\d+[.,]\d+)")
-    iva = buscar_en_texto(texto, r"(?:iva\s*\(?\d+%?\)?|i\s*v\s*a|i\.v\.a\.|i\.v\.a)\s*([0-9.,]+)")
+    base_match = re.search(r"(?:base\s+imponible|base)[^\d\n\r]{0,10}(\d{1,3}(?:\.\d{3})*,\d{2})", texto, re.IGNORECASE)
+    iva_match = re.search(r"(iva|i\.?v\.?a\.?)\s*\(?\d{1,2}%?\)?[^\d\n\r]{0,10}(\d{1,3}(?:\.\d{3})*,\d{2})", texto, re.IGNORECASE)
+    base = base_match.group(1).strip() if base_match else ""
+    iva = iva_match.group(2).strip() if iva_match else ""
+
     concepto = ""
     texto_upper = texto.upper()
     if "CONCEPTO" in texto_upper:
         split = texto_upper.split("CONCEPTO", 1)[-1]
         concepto = split.split("BASE IMPONIBLE")[0].strip() if "BASE IMPONIBLE" in split else split.strip()
+
     return base, iva, concepto
 
 def procesar_factura(blob):
     content = blob.download_as_bytes()
+    if not content:
+        raise ValueError("El archivo está vacío o corrupto")
+
     raw_document = documentai.RawDocument(content=content, mime_type="application/pdf")
     request = documentai.ProcessRequest(name=name, raw_document=raw_document)
     result = docai_client.process_document(request=request)
@@ -133,9 +143,6 @@ def guardar_excel(cliente, proyecto, filas):
     df.to_excel(ruta, index=False)
     print(f"✅ Guardado/actualizado: {ruta}")
 
-
-# --- INTERFAZ INTERACTIVA ---
-
 def seleccionar_opcion(lista, titulo):
     print(f"\n📂 {titulo}")
     for i, item in enumerate(lista, 1):
@@ -152,7 +159,6 @@ def seleccionar_opcion(lista, titulo):
 def main_interactivo():
     print("🧾 Procesador de facturas con Document AI")
 
-    # Obtener estructura cliente/proyecto
     blobs = bucket.list_blobs()
     clientes = set()
     proyectos = {}
@@ -169,7 +175,6 @@ def main_interactivo():
     clientes = sorted(clientes)
     proyectos = {k: sorted(list(v)) for k, v in proyectos.items()}
 
-    # Selección interactiva
     cliente = seleccionar_opcion(clientes, "¿Qué cliente quieres procesar?")
     proyecto = seleccionar_opcion(proyectos[cliente], f"¿Qué proyecto de {cliente} quieres procesar?")
 
@@ -182,17 +187,30 @@ def main_interactivo():
             continue
         if not blob.name.startswith(f"{cliente}/{proyecto}/"):
             continue
+        if blob.size == 0:
+            print(f"⚠️ {blob.name} está vacío. Se omite.")
+            errores.append({"Archivo": blob.name, "Error": "Archivo vacío"})
+            continue
 
-        encontrados = True
-        print(f"📄 Procesando {blob.name}...")
-        fila = procesar_factura(blob)
-        guardar_excel(cliente, proyecto, fila)
+        try:
+            print(f"📄 Procesando {blob.name}...")
+            fila = procesar_factura(blob)
+            guardar_excel(cliente, proyecto, fila)
+            encontrados = True
+        except Exception as e:
+            print(f"❌ Error procesando {blob.name}: {e}")
+            errores.append({"Archivo": blob.name, "Error": str(e)})
+
+    if errores:
+        df_errores = pd.DataFrame(errores)
+        ruta_errores = os.path.join(OUTPUT_DIR, ERROR_LOG)
+        df_errores.to_csv(ruta_errores, index=False)
+        print(f"\n⚠️ Log de errores generado: {ruta_errores}")
 
     if not encontrados:
-        print("⚠️ No se encontraron PDFs en esa ruta del bucket.")
+        print("⚠️ No se encontraron PDFs válidos en esa ruta del bucket.")
     else:
         print("✅ Proceso finalizado.")
 
 if __name__ == "__main__":
     main_interactivo()
-
