@@ -1,4 +1,6 @@
-google-cloud-storage
-google-cloud-documentai
+streamlit
 pandas
 openpyxl
+google-cloud-documentai
+PyPDF2
+google-auth
