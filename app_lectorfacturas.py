@@ -10,7 +10,7 @@ import re
 
 # --- CONFIGURACIÓN ---
 PROJECT_ID   = "772723410003"
-LOCATION     = "eu"
+LOCATION     = "us"
 PROCESSOR_ID = "e5c3f90497bd2e9f"
 
 # --- Autenticación con st.secrets ---
