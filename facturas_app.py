@@ -5,212 +5,183 @@ from google.cloud import documentai_v1 as documentai
 from google.cloud import storage
 
 # --- CONFIGURACIÓN ---
-PROJECT_ID = "772723410003"
-LOCATION = "us"
+PROJECT_ID   = "772723410003"
+LOCATION     = "us"
 PROCESSOR_ID = "dff8117c158462cd"
-BUCKET_NAME = "facturasclientes"
-OUTPUT_DIR = "output_docai"
-ERROR_LOG = "errores_procesamiento.csv"
-
-# Inicializar clientes
-docai_client = documentai.DocumentProcessorServiceClient()
-name = f"projects/{PROJECT_ID}/locations/{LOCATION}/processors/{PROCESSOR_ID}"
-storage_client = storage.Client()
-bucket = storage_client.bucket(BUCKET_NAME)
+BUCKET_NAME  = "facturasclientes"
+OUTPUT_DIR   = "output_docai"
+ERROR_LOG    = "errores_procesamiento.csv"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Registro de errores
-errores = []
+# Inicializar clientes
+docai_client   = documentai.DocumentProcessorServiceClient()
+processor_name = f"projects/{PROJECT_ID}/locations/{LOCATION}/processors/{PROCESSOR_ID}"
+storage_client = storage.Client()
+bucket         = storage_client.bucket(BUCKET_NAME)
 
 # --- FUNCIONES AUXILIARES ---
 
-def buscar_en_texto(texto, patron):
-    match = re.search(patron, texto, re.IGNORECASE)
-    return match.group(1).strip() if match else ""
-
-def parse_float_es(valor):
+def parse_float_es(valor: str) -> float:
+    """Convierte '1.234,56' a float 1234.56; si falla, devuelve 0.0"""
     if not valor:
         return 0.0
-    valor = valor.replace('.', '').replace(',', '.')
+    limpia = re.sub(r"[^\d,\.]", "", valor).replace('.', '').replace(',', '.')
     try:
-        return float(valor)
-    except:
+        return float(limpia)
+    except ValueError:
         return 0.0
 
-def extraer_del_texto_libre(texto):
-    base_match = re.search(r"(?:base\s+imponible|base)[^\d\n\r]{0,10}(\d{1,3}(?:\.\d{3})*,\d{2})", texto, re.IGNORECASE)
-    iva_match = re.search(r"(iva|i\.?v\.?a\.?)\s*\(?\d{1,2}%?\)?[^\d\n\r]{0,10}(\d{1,3}(?:\.\d{3})*,\d{2})", texto, re.IGNORECASE)
-    base = base_match.group(1).strip() if base_match else ""
-    iva = iva_match.group(2).strip() if iva_match else ""
 
-    concepto = ""
-    texto_upper = texto.upper()
-    if "CONCEPTO" in texto_upper:
-        split = texto_upper.split("CONCEPTO", 1)[-1]
-        concepto = split.split("BASE IMPONIBLE")[0].strip() if "BASE IMPONIBLE" in split else split.strip()
-
-    return base, iva, concepto
-
-def procesar_factura(blob):
+def procesar_factura(blob) -> dict:
+    """Procesa una factura PDF y devuelve un dict con los campos solicitados."""
     content = blob.download_as_bytes()
     if not content:
         raise ValueError("El archivo está vacío o corrupto")
 
-    raw_document = documentai.RawDocument(content=content, mime_type="application/pdf")
-    request = documentai.ProcessRequest(name=name, raw_document=raw_document)
-    result = docai_client.process_document(request=request)
-    doc = result.document
+    raw_doc = documentai.RawDocument(content=content, mime_type="application/pdf")
+    req = documentai.ProcessRequest(name=processor_name, raw_document=raw_doc)
+    res = docai_client.process_document(request=req)
+    doc = res.document
 
-    supplier = ""
-    cif_supplier = ""
-    customer = ""
-    cif_customer = ""
-    invoice_date = ""
-    invoice_id = ""
-    base_total = 0.0
-    iva_total = 0.0
-    total_global = ""
-    concepto_unico = ""
-
-    for e in doc.entities:
-        if e.type_ == "supplier_name":
-            supplier = e.mention_text
-        elif e.type_ == "supplier_tax_id":
-            cif_supplier = e.mention_text
-        elif e.type_ == "customer_name":
-            customer = e.mention_text
-        elif e.type_ == "customer_tax_id":
-            cif_customer = e.mention_text
-        elif e.type_ == "invoice_date":
-            invoice_date = e.mention_text
-        elif e.type_ == "invoice_id":
-            invoice_id = e.mention_text
-        elif e.type_ == "total_amount":
-            total_global = e.mention_text
-        elif e.type_ == "vat":
-            for prop in e.properties:
-                if prop.type_ == "vat/amount":
-                    base_total += parse_float_es(prop.mention_text)
-                elif prop.type_ == "vat/tax_amount":
-                    iva_total += parse_float_es(prop.mention_text)
-
-    descripciones = []
-    for e in doc.entities:
-        if e.type_ == "line_item":
-            for p in e.properties:
-                if p.type_ == "line_item/description":
-                    descripciones.append(p.mention_text)
-
-    concepto_unico = " | ".join(descripciones).strip()
-
-    if not base_total or not iva_total:
-        base_fbk, iva_fbk, concepto_fbk = extraer_del_texto_libre(doc.text)
-        if not base_total and base_fbk:
-            base_total = parse_float_es(base_fbk)
-        if not iva_total and iva_fbk:
-            iva_total = parse_float_es(iva_fbk)
-        if not concepto_unico and concepto_fbk:
-            concepto_unico = concepto_fbk
-
-    fila = {
+    # Inicializar campos
+    datos = {
         "Archivo": blob.name,
-        "Proveedor": supplier,
-        "CIF_Proveedor": cif_supplier,
-        "Cliente": customer,
-        "CIF_Cliente": cif_customer,
-        "Fecha": invoice_date,
-        "Nº Factura": invoice_id,
-        "Base Imponible": f"{base_total:.2f}" if base_total else "",
-        "IVA": f"{iva_total:.2f}" if iva_total else "",
-        "Total": total_global,
-        "Concepto": concepto_unico
+        "Proveedor": "",
+        "Dirección": "",
+        "Teléfono": "",
+        "Nº Factura": "",
+        "Fecha Emisión": "",
+        "Nº Pedido": "",
+        "Base Imponible": "",
+        "IVA": "",
+        "Importe Total": "",
+        "CIF Proveedor": "",
+        "Concepto": []
     }
 
-    return [fila]
+    # Extraer entidades según tipos deseados
+    for e in doc.entities:
+        text = e.mention_text or ""
+        t = e.type_
+        if t == "supplier_name":
+            datos["Proveedor"] = text
+        elif t == "supplier_address":
+            datos["Dirección"] = text
+        elif t == "supplier_phone":
+            datos["Teléfono"] = text
+        elif t == "supplier_tax_id":
+            datos["CIF Proveedor"] = text
+        elif t == "invoice_id":
+            datos["Nº Factura"] = text
+        elif t == "invoice_date":
+            datos["Fecha Emisión"] = text
+        elif t == "purchase_order":
+            datos["Nº Pedido"] = text
+        elif t == "net_amount":
+            valor = parse_float_es(text)
+            datos["Base Imponible"] = f"{valor:.2f}".replace('.', ',')
+        elif t == "total_tax_amount":
+            valor = parse_float_es(text)
+            datos["IVA"] = f"{valor:.2f}".replace('.', ',')
+        elif t == "total_amount":
+            datos["Importe Total"] = text
+        elif t == "line_item":
+            for p in e.properties:
+                if p.type_.endswith("description"):
+                    datos["Concepto"].append(p.mention_text or "")
 
-def guardar_excel(cliente, proyecto, filas):
+    # Unir conceptos en una sola celda
+    datos["Concepto"] = " | ".join(filter(None, datos["Concepto"]))
+
+    return datos
+
+
+def guardar_excel(cliente: str, proyecto: str, filas: list[dict]):
     nombre = f"{cliente}_{proyecto}.xlsx"
-    ruta = os.path.join(OUTPUT_DIR, nombre)
+    ruta   = os.path.join(OUTPUT_DIR, nombre)
 
+    # Crear DataFrame y reordenar columnas para que 'CIF Proveedor' sea la segunda
     df_nuevo = pd.DataFrame(filas)
+    columnas_orden = [
+        "Archivo",
+        "CIF Proveedor",
+        "Proveedor",
+        "Dirección",
+        "Teléfono",
+        "Nº Factura",
+        "Fecha Emisión",
+        "Nº Pedido",
+        "Base Imponible",
+        "IVA",
+        "Importe Total",
+        "Concepto"
+    ]
+    # Asegurar que todas las columnas existen en el DataFrame
+    columnas_final = [col for col in columnas_orden if col in df_nuevo.columns]
+    df_nuevo = df_nuevo[columnas_final]
+
     if os.path.exists(ruta):
-        df_existente = pd.read_excel(ruta)
-        df = pd.concat([df_existente, df_nuevo], ignore_index=True)
+        df_exist = pd.read_excel(ruta)
+        # Reordenar también el existente antes de concatenar
+        df_exist = df_exist[columnas_final]
+        df = pd.concat([df_exist, df_nuevo], ignore_index=True)
     else:
         df = df_nuevo
 
     df.to_excel(ruta, index=False)
     print(f"✅ Guardado/actualizado: {ruta}")
 
+
 def seleccionar_opcion(lista, titulo):
     print(f"\n📂 {titulo}")
-    for i, item in enumerate(lista, 1):
-        print(f"{i}. {item}")
+    for i, v in enumerate(lista, 1):
+        print(f" {i}. {v}")
     while True:
         try:
-            idx = int(input("Selecciona el número: ")) - 1
-            if 0 <= idx < len(lista):
-                return lista[idx]
-        except:
-            pass
-        print("❌ Opción no válida. Intenta de nuevo.")
+            sel = int(input("> ")) - 1
+            return lista[sel]
+        except Exception:
+            print("Opción inválida, inténtalo de nuevo.")
+
 
 def main_interactivo():
     print("🧾 Procesador de facturas con Document AI")
 
-    blobs = bucket.list_blobs()
+    blobs = list(bucket.list_blobs())
     clientes = set()
     proyectos = {}
-
     for blob in blobs:
-        partes = blob.name.split("/")
-        if len(partes) >= 2 and blob.name.endswith(".pdf"):
-            cliente, proyecto = partes[0], partes[1]
-            clientes.add(cliente)
-            if cliente not in proyectos:
-                proyectos[cliente] = set()
-            proyectos[cliente].add(proyecto)
+        if blob.name.lower().endswith(".pdf") and "/" in blob.name:
+            c,p = blob.name.split("/",1)
+            clientes.add(c)
+            proyectos.setdefault(c,set()).add(p.split("/",1)[0])
 
     clientes = sorted(clientes)
-    proyectos = {k: sorted(list(v)) for k, v in proyectos.items()}
+    proyectos = {c: sorted(proyectos[c]) for c in clientes}
 
-    cliente = seleccionar_opcion(clientes, "¿Qué cliente quieres procesar?")
-    proyecto = seleccionar_opcion(proyectos[cliente], f"¿Qué proyecto de {cliente} quieres procesar?")
+    cliente  = seleccionar_opcion(clientes, "¿Qué cliente procesar?")
+    proyecto = seleccionar_opcion(proyectos[cliente], f"¿Qué proyecto de {cliente}?            ")
 
-    print(f"\n🔍 Buscando facturas en {cliente}/{proyecto}...\n")
-    blobs = bucket.list_blobs()
-
-    encontrados = False
+    filas, errores = [], []
     for blob in blobs:
-        if not blob.name.lower().endswith(".pdf"):
-            continue
         if not blob.name.startswith(f"{cliente}/{proyecto}/"):
             continue
-        if blob.size == 0:
-            print(f"⚠️ {blob.name} está vacío. Se omite.")
-            errores.append({"Archivo": blob.name, "Error": "Archivo vacío"})
-            continue
-
         try:
-            print(f"📄 Procesando {blob.name}...")
-            fila = procesar_factura(blob)
-            guardar_excel(cliente, proyecto, fila)
-            encontrados = True
+            if blob.size == 0:
+                raise ValueError("Archivo vacío")
+            print(f"Procesando {blob.name}...")
+            datos = procesar_factura(blob)
+            filas.append(datos)
         except Exception as e:
-            print(f"❌ Error procesando {blob.name}: {e}")
             errores.append({"Archivo": blob.name, "Error": str(e)})
 
+    if filas:
+        guardar_excel(cliente, proyecto, filas)
     if errores:
-        df_errores = pd.DataFrame(errores)
-        ruta_errores = os.path.join(OUTPUT_DIR, ERROR_LOG)
-        df_errores.to_csv(ruta_errores, index=False)
-        print(f"\n⚠️ Log de errores generado: {ruta_errores}")
-
-    if not encontrados:
-        print("⚠️ No se encontraron PDFs válidos en esa ruta del bucket.")
-    else:
-        print("✅ Proceso finalizado.")
+        pd.DataFrame(errores).to_csv(os.path.join(OUTPUT_DIR, ERROR_LOG), index=False)
+        print(f"⚠️ Errores registrados en {ERROR_LOG}")
+    print("✅ Proceso completado.")
 
 if __name__ == "__main__":
     main_interactivo()
