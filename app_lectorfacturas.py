@@ -11,7 +11,7 @@ import re
 # --- CONFIGURACIÓN ---
 PROJECT_ID   = "772723410003"
 LOCATION     = "us"
-PROCESSOR_ID = "e5c3f90497bd2e9f"
+PROCESSOR_ID = "dff8117c158462cd"
 
 # --- Autenticación con st.secrets ---
 info = json.loads(st.secrets["google"]["credentials"])
