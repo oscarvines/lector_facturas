@@ -1,22 +1,7 @@
-
-# macOS
-.DS_Store
-
-# Archivos temporales
+facturasprueba/
+output_docai/
 *.xlsx
-*.log
+*.pdf
+.DS_Store
 __pycache__/
 .env
-split_temp/
-~$*
-# Entornos Python
-env/
-.venv/
-.python-version
-
-# Salidas del procesamiento
-output_docai/
-
-# Datos locales de prueba
-facturas parra prueba/
-
