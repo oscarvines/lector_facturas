@@ -5,3 +5,4 @@ output_docai/
 .DS_Store
 __pycache__/
 .env
+env/
