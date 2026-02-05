@@ -1,6 +1,6 @@
 streamlit
 pandas
-openpyxl
 google-cloud-documentai
-PyPDF2
 google-auth
+PyPDF2
+openpyxl

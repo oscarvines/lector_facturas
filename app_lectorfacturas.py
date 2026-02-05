@@ -4,14 +4,15 @@ import shutil
 import streamlit as st
 import pandas as pd
 import json
+import re
 from google.oauth2 import service_account
 from google.cloud import documentai_v1 as documentai
-import re
+from PyPDF2 import PdfReader, PdfWriter  # Necesario para la V3
 
 # --- CONFIGURACIÓN ---
 PROJECT_ID   = "772723410003"
 LOCATION     = "us"
-PROCESSOR_ID = "e5c3f90497bd2e9f"
+PROCESSOR_ID = "dff8117c158462cd" # Usando tu nuevo procesador de la V3
 
 # --- Autenticación con st.secrets ---
 info = json.loads(st.secrets["google"]["credentials"])
@@ -19,167 +20,140 @@ creds = service_account.Credentials.from_service_account_info(info)
 docai_client = documentai.DocumentProcessorServiceClient(credentials=creds)
 processor_name = f"projects/{PROJECT_ID}/locations/{LOCATION}/processors/{PROCESSOR_ID}"
 
-def parse_float_es(valor: str) -> float:
-    if not valor:
-        return 0.0
-    limpia = re.sub(r"[^\d,\.]", "", valor).replace('.', '').replace(',', '.')
-    try:
-        return float(limpia)
-    except ValueError:
-        return 0.0
+# --- FUNCIONES LÓGICA V3 ---
 
-def procesar_factura_bytes(pdf_bytes, filename) -> dict:
-    try:
-        raw_doc = documentai.RawDocument(content=pdf_bytes, mime_type="application/pdf")
-        req = documentai.ProcessRequest(name=processor_name, raw_document=raw_doc)
-        res = docai_client.process_document(request=req)
-        doc = res.document
+def parse_amount(valor: str) -> float:
+    if not valor: return 0.0
+    s = re.sub(r"[^\d,.\-]", "", str(valor))
+    if not s: return 0.0
+    if "," in s and "." in s:
+        s = s.replace(".", "").replace(",", ".") if s.rfind(",") > s.rfind(".") else s.replace(",", "")
+    elif "," in s: s = s.replace(",", ".")
+    try: return round(float(s), 2)
+    except ValueError: return 0.0
 
-        datos = {
-            "Archivo": filename,
-            "Proveedor": "",
-            "Dirección": "",
-            "Teléfono": "",
-            "Nº Factura": "",
-            "Fecha Emisión": "",
-            "Nº Pedido": "",
-            "Base Imponible": "",
-            "IVA": "",
-            "Importe Total": "",
-            "CIF Proveedor": "",
-            "Concepto": []
-        }
-        for e in doc.entities:
-            text = e.mention_text or ""
-            t = e.type_
-            if t == "supplier_name":
-                datos["Proveedor"] = text
-            elif t == "supplier_address":
-                datos["Dirección"] = text
-            elif t == "supplier_phone":
-                datos["Teléfono"] = text
-            elif t == "supplier_tax_id":
-                datos["CIF Proveedor"] = text
-            elif t == "invoice_id":
-                datos["Nº Factura"] = text
-            elif t == "invoice_date":
-                datos["Fecha Emisión"] = text
-            elif t == "purchase_order":
-                datos["Nº Pedido"] = text
-            elif t == "net_amount":
-                valor = parse_float_es(text)
-                datos["Base Imponible"] = f"{valor:.2f}".replace('.', ',')
-            elif t == "total_tax_amount":
-                valor = parse_float_es(text)
-                datos["IVA"] = f"{valor:.2f}".replace('.', ',')
-            elif t == "total_amount":
-                datos["Importe Total"] = text
-            elif t == "line_item":
-                for p in e.properties:
-                    if p.type_.endswith("description"):
-                        datos["Concepto"].append(p.mention_text or "")
-        datos["Concepto"] = " | ".join(filter(None, datos["Concepto"]))
-        return datos, None
-    except Exception as e:
-        return None, f"{filename}: {e}"
-
-# --- Streamlit App State ---
-if "uploaded_files" not in st.session_state:
-    st.session_state.uploaded_files = []
-if "resultados" not in st.session_state:
-    st.session_state.resultados = None
-if "errores" not in st.session_state:
-    st.session_state.errores = None
-if "procesado" not in st.session_state:
-    st.session_state.procesado = False
-
-split_dir = "split_temp"
-os.makedirs(split_dir, exist_ok=True)
-
-st.set_page_config(page_title="Lector de Facturas", layout="wide")
-st.title("📄 Lector de Facturas con Document AI")
-
-# Subida de archivos (en varias tandas)
-uploaded_files = st.file_uploader(
-    "Sube aquí tus facturas en PDF (puedes hacerlo en varias tandas antes de procesar)",
-    type="pdf",
-    accept_multiple_files=True,
-    key="fileuploader"
-)
-
-# Guardar archivos subidos temporalmente
-if uploaded_files:
-    for uploaded in uploaded_files:
-        temp_path = os.path.join(split_dir, uploaded.name)
-        # Evita duplicados
-        if not os.path.exists(temp_path):
-            with open(temp_path, "wb") as f:
-                f.write(uploaded.read())
-    # Actualiza la lista interna de archivos
-    st.session_state.uploaded_files = [
-        os.path.join(split_dir, f) for f in os.listdir(split_dir) if f.endswith('.pdf')
+def es_justificante_local(texto):
+    """Lógica de ahorro V3: Detecta justificantes gratis."""
+    patrones = [
+        r"detalle de orden", r"remesa", r"cuenta ordenante", r"cuenta beneficiario",
+        r"justificante de pago", r"transferencia realizada", r"ejecutada", r"abono"
     ]
-    st.info(f"{len(st.session_state.uploaded_files)} archivos preparados para procesar.")
+    return any(re.search(p, texto.lower()) for p in patrones)
 
-# Botón para procesar solo cuando lo pulse el usuario
-if st.button("Procesar"):
-    resultados = []
-    errores = []
-    total = len(st.session_state.uploaded_files)
+def llamar_a_document_ai(pdf_bytes):
+    raw_doc = documentai.RawDocument(content=pdf_bytes, mime_type="application/pdf")
+    req = documentai.ProcessRequest(name=processor_name, raw_document=raw_doc)
+    res = docai_client.process_document(request=req)
+    return res.document
+
+# --- LÓGICA DE PROCESAMIENTO POR PÁGINAS (V3) ---
+
+def procesar_archivo_v3(file_bytes, filename):
+    pdf_reader = PdfReader(io.BytesIO(file_bytes))
+    resultados_archivo = []
+    
+    for i, page in enumerate(pdf_reader.pages):
+        texto_local = page.extract_text() or ""
+        ref = f"{filename} (pág {i+1})"
+        
+        # 1. Filtro de Ahorro
+        if es_justificante_local(texto_local):
+            continue # Salta a la siguiente página sin llamar a Google
+            
+        # 2. Llamada a Google
+        writer = PdfWriter()
+        writer.add_page(page)
+        with io.BytesIO() as buf:
+            writer.write(buf)
+            doc = llamar_a_document_ai(buf.getvalue())
+            
+            data = {
+                "Archivo": ref, "Proveedor": "", "CIF_Proveedor": "",
+                "Cliente": "", "CIF_Cliente": "", "Fecha": "", "Nº Factura": "",
+                "Base Imponible": 0.0, "IVA": 0.0, "Total": 0.0, "Concepto": "", "Validación": ""
+            }
+
+            base_c, iva_c, total_c, descr = [], [], [], []
+
+            for e in doc.entities:
+                t, text = e.type_, e.mention_text or ""
+                if t == "supplier_name": data["Proveedor"] = text.replace("\n", " ")
+                elif t == "supplier_tax_id": data["CIF_Proveedor"] = text
+                elif t == "customer_name": data["Cliente"] = text.replace("\n", " ")
+                elif t == "customer_tax_id": data["CIF_Cliente"] = text
+                elif t == "invoice_date": data["Fecha"] = text
+                elif t == "invoice_id": data["Nº Factura"] = text
+                elif t == "total_amount": total_c.append(text)
+                elif t == "net_amount": base_c.append(text)
+                elif t == "total_tax_amount": iva_c.append(text)
+                elif t == "line_item":
+                    for prop in e.properties:
+                        if prop.type_ == "line_item/description": descr.append(prop.mention_text)
+
+            data["Base Imponible"] = max([parse_amount(v) for v in base_c] or [0.0])
+            data["IVA"] = max([parse_amount(v) for v in iva_c] or [0.0])
+            data["Total"] = max([parse_amount(v) for v in total_c] or [0.0])
+            data["Concepto"] = " | ".join(filter(None, [d.replace("\n", " ") for d in descr]))
+
+            # 3. Validación Contable
+            suma = round(data["Base Imponible"] + data["IVA"], 2)
+            data["Validación"] = "CORRECTA" if data["Total"] > 0 and abs(suma - data["Total"]) < 0.05 else "REVISAR"
+            
+            resultados_archivo.append(data)
+            
+    return resultados_archivo
+
+# --- STREAMLIT UI (Se mantiene similar pero con la nueva lógica) ---
+
+st.set_page_config(page_title="Lector Facturas V3", layout="wide")
+st.title("📄 Lector de Facturas Pro (V3 - Ahorro de Costes)")
+
+if "uploaded_files_data" not in st.session_state:
+    st.session_state.uploaded_files_data = {} # {filename: bytes}
+
+uploaded_files = st.file_uploader("Sube tus PDFs", type="pdf", accept_multiple_files=True)
+
+if uploaded_files:
+    for f in uploaded_files:
+        if f.name not in st.session_state.uploaded_files_data:
+            st.session_state.uploaded_files_data[f.name] = f.read()
+    st.info(f"Archivos listos: {len(st.session_state.uploaded_files_data)}")
+
+if st.button("🚀 Procesar con Lógica V3"):
+    todos_los_resultados = []
+    total_archivos = len(st.session_state.uploaded_files_data)
     progreso = st.progress(0)
-    procesadas = 0
-    with st.spinner("Procesando facturas..."):
-        for temp_path in st.session_state.uploaded_files:
-            with open(temp_path, "rb") as f:
-                pdf_bytes = f.read()
-            datos, error = procesar_factura_bytes(pdf_bytes, os.path.basename(temp_path))
-            if datos:
-                resultados.append(datos)
-            else:
-                errores.append(error)
-            procesadas += 1
-            progreso.progress(procesadas / total if total else 1)
-    progreso.progress(1.0)
-    # Muestra resultados
-    if resultados:
-        df = pd.DataFrame(resultados)
-        st.success(f"¡{len(resultados)} facturas procesadas correctamente!")
+    
+    with st.spinner("Analizando y filtrando justificantes..."):
+        for i, (name, b) in enumerate(st.session_state.uploaded_files_data.items()):
+            res_pdf = procesar_archivo_v3(b, name)
+            todos_los_resultados.extend(res_pdf)
+            progreso.progress((i + 1) / total_archivos)
+            
+    if todos_los_resultados:
+        df = pd.DataFrame(todos_los_resultados)
         st.session_state.resultados = df
+        st.success(f"Proceso finalizado. Se extrajeron {len(df)} filas útiles.")
     else:
-        st.session_state.resultados = None
-    st.session_state.errores = errores
-    st.session_state.procesado = True
+        st.warning("No se encontraron facturas válidas (¿eran todos justificantes?)")
 
-    # Limpieza automática de archivos temporales tras procesar
-    shutil.rmtree(split_dir)
-    os.makedirs(split_dir, exist_ok=True)
-    st.session_state.uploaded_files = []
-
-# Botón para limpiar resultados
-if st.button("Limpiar resultados"):
-    st.session_state.resultados = None
-    st.session_state.errores = None
-    st.session_state.procesado = False
-    st.session_state.uploaded_files = []
-    if os.path.exists(split_dir):
-        shutil.rmtree(split_dir)
-        os.makedirs(split_dir, exist_ok=True)
-    st.info("Los resultados han sido limpiados. Puedes subir nuevos PDFs.")
-
-# Mostrar resultados si hay
-if st.session_state.procesado and st.session_state.resultados is not None:
-    st.dataframe(st.session_state.resultados)
-    # Descargar Excel
+if "resultados" in st.session_state and st.session_state.resultados is not None:
+    # Mostrar tabla con colores
+    st.dataframe(st.session_state.resultados.style.applymap(
+        lambda x: 'background-color: #ffcccc' if x == 'REVISAR' else '', subset=['Validación']
+    ))
+    
+    # Descarga Excel
     towrite = io.BytesIO()
     st.session_state.resultados.to_excel(towrite, index=False, engine="openpyxl")
-    towrite.seek(0)
     st.download_button(
-        label="⬇️ Descargar Excel",
-        data=towrite,
-        file_name="facturas_extraidas.xlsx",
+        label="⬇️ Descargar Excel V3",
+        data=towrite.getvalue(),
+        file_name="facturas_v3.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-if st.session_state.procesado and st.session_state.errores:
-    st.error("Se produjeron errores en algunos archivos:")
-    for e in st.session_state.errores:
-        st.write(e)
+
+if st.button("🗑️ Limpiar Todo"):
+    st.session_state.uploaded_files_data = {}
+    st.session_state.resultados = None
+    st.rerun()
