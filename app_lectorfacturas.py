@@ -7,12 +7,12 @@ import json
 import re
 from google.oauth2 import service_account
 from google.cloud import documentai_v1 as documentai
-from PyPDF2 import PdfReader, PdfWriter  # Necesario para la V3
+from PyPDF2 import PdfReader, PdfWriter 
 
 # --- CONFIGURACIÓN ---
 PROJECT_ID   = "772723410003"
 LOCATION     = "us"
-PROCESSOR_ID = "dff8117c158462cd" # Usando tu nuevo procesador de la V3
+PROCESSOR_ID = "dff8117c158462cd" 
 
 # --- Autenticación con st.secrets ---
 info = json.loads(st.secrets["google"]["credentials"])
@@ -33,11 +33,13 @@ def parse_amount(valor: str) -> float:
     except ValueError: return 0.0
 
 def es_justificante_local(texto):
-    """Lógica de ahorro V3: Detecta justificantes gratis."""
+    """Lógica de ahorro V3: Detecta justificantes gratis sin bloquear nombres de bancos."""
     patrones = [
         r"detalle de orden", r"remesa", r"cuenta ordenante", r"cuenta beneficiario",
-        r"justificante de pago", r"transferencia realizada", r"ejecutada", r"abono"
+        r"justificante de pago", r"transferencia realizada", r"ejecutada", r"confirmado"
     ]
+    # 'adeudo' se quita también si sospechas que puede venir en facturas, 
+    # pero normalmente 'adeudo' define el documento bancario. Lo dejo fuera por si acaso.
     return any(re.search(p, texto.lower()) for p in patrones)
 
 def llamar_a_document_ai(pdf_bytes):
@@ -56,9 +58,9 @@ def procesar_archivo_v3(file_bytes, filename):
         texto_local = page.extract_text() or ""
         ref = f"{filename} (pág {i+1})"
         
-        # 1. Filtro de Ahorro
+        # 1. Filtro de Ahorro (Solo patrones muy específicos de justificantes)
         if es_justificante_local(texto_local):
-            continue # Salta a la siguiente página sin llamar a Google
+            continue 
             
         # 2. Llamada a Google
         writer = PdfWriter()
@@ -95,21 +97,36 @@ def procesar_archivo_v3(file_bytes, filename):
             data["Total"] = max([parse_amount(v) for v in total_c] or [0.0])
             data["Concepto"] = " | ".join(filter(None, [d.replace("\n", " ") for d in descr]))
 
-            # 3. Validación Contable
-            suma = round(data["Base Imponible"] + data["IVA"], 2)
-            data["Validación"] = "CORRECTA" if data["Total"] > 0 and abs(suma - data["Total"]) < 0.05 else "REVISAR"
+            # 3. VALIDACIÓN DUAL MEJORADA
+            base = data["Base Imponible"]
+            iva = data["IVA"]
+            total = data["Total"]
+            
+            diferencia_suma = abs((base + iva) - total)
+            iva_esperado_21 = round(base * 0.21, 2)
+            es_iva_21 = abs(iva - iva_esperado_21) < 0.05 
+
+            if total <= 0:
+                data["Validación"] = "SIN DATOS"
+            elif diferencia_suma > 0.1:
+                data["Validación"] = "ERROR SUMA"
+            elif not es_iva_21:
+                # Aquí caerán los justificantes de Cajamar/CaixaBank que pasen el filtro
+                data["Validación"] = "REVISAR (No es 21%)"
+            else:
+                data["Validación"] = "CORRECTA"
             
             resultados_archivo.append(data)
             
     return resultados_archivo
 
-# --- STREAMLIT UI (Se mantiene similar pero con la nueva lógica) ---
+# --- STREAMLIT UI ---
 
 st.set_page_config(page_title="Lector Facturas V3", layout="wide")
-st.title("📄 Lector de Facturas Pro (V3 - Ahorro de Costes)")
+st.title("📄 Lector de Facturas Pro (V3 - Validación 21%)")
 
 if "uploaded_files_data" not in st.session_state:
-    st.session_state.uploaded_files_data = {} # {filename: bytes}
+    st.session_state.uploaded_files_data = {} 
 
 uploaded_files = st.file_uploader("Sube tus PDFs", type="pdf", accept_multiple_files=True)
 
@@ -124,7 +141,7 @@ if st.button("🚀 Procesar con Lógica V3"):
     total_archivos = len(st.session_state.uploaded_files_data)
     progreso = st.progress(0)
     
-    with st.spinner("Analizando y filtrando justificantes..."):
+    with st.spinner("Procesando y validando IVA..."):
         for i, (name, b) in enumerate(st.session_state.uploaded_files_data.items()):
             res_pdf = procesar_archivo_v3(b, name)
             todos_los_resultados.extend(res_pdf)
@@ -133,17 +150,19 @@ if st.button("🚀 Procesar con Lógica V3"):
     if todos_los_resultados:
         df = pd.DataFrame(todos_los_resultados)
         st.session_state.resultados = df
-        st.success(f"Proceso finalizado. Se extrajeron {len(df)} filas útiles.")
+        st.success(f"Proceso finalizado.")
     else:
-        st.warning("No se encontraron facturas válidas (¿eran todos justificantes?)")
+        st.warning("No se encontraron documentos válidos.")
 
 if "resultados" in st.session_state and st.session_state.resultados is not None:
-    # Mostrar tabla con colores
+    def resaltar_validación(val):
+        if val == 'CORRECTA': return ''
+        return 'background-color: #ffcccc; color: #990000; font-weight: bold'
+
     st.dataframe(st.session_state.resultados.style.applymap(
-        lambda x: 'background-color: #ffcccc' if x == 'REVISAR' else '', subset=['Validación']
+        resaltar_validación, subset=['Validación']
     ))
     
-    # Descarga Excel
     towrite = io.BytesIO()
     st.session_state.resultados.to_excel(towrite, index=False, engine="openpyxl")
     st.download_button(
