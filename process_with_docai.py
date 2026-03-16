@@ -108,20 +108,10 @@ def procesar_factura(blob):
         elif e.type_ == "line_item":
             line_items.append(e)
 
-        # --- CLAVE: Capturar 'vat' / 'net_amount' si aparece ---
-        elif e.type_ == "vat":
-            # Generalmente 'vat/amount' = base, 'vat/tax_amount' = IVA
-            for prop in e.properties:
-                if prop.type_ == "vat/amount":
-                    base_global = prop.mention_text
-                elif prop.type_ == "vat/tax_amount":
-                    iva_global = prop.mention_text
-
         elif e.type_ == "net_amount":
-            # A veces 'net_amount' es realmente la base imponible
-            # Si Document AI no devuelve 'vat', podrías usar net_amount como base
-            if not base_global:
-                base_global = e.mention_text
+            base_global = e.mention_text
+        elif e.type_ == "total_tax_amount":
+            iva_global = e.mention_text
 
     # 2) Leer line items y unir sus descripciones (si quieres un solo concepto)
     descripciones = []
@@ -137,7 +127,7 @@ def procesar_factura(blob):
 
     concepto_unico = " | ".join(descripciones).strip()
 
-    # 3) Si NO hay 'vat' y 'net_amount', fallback a OCR
+    # 3) Si NO hay 'net_amount' ni 'total_tax_amount', fallback a OCR
     if not base_global and not iva_global:
         texto_ocr = doc.text
         base_fbk, iva_fbk, c_fbk = extraer_del_texto_libre(texto_ocr)
@@ -157,8 +147,8 @@ def procesar_factura(blob):
         "CIF_Cliente": cif_customer,
         "Fecha": invoice_date,
         "Nº Factura": invoice_id,
-        "Base Imponible": base_global,  # <- se rellena desde e.type_=="vat" > vat/amount
-        "IVA": iva_global,             # <- se rellena desde e.type_=="vat" > vat/tax_amount
+        "Base Imponible": base_global,  # <- se rellena desde e.type_=="net_amount"
+        "IVA": iva_global,             # <- se rellena desde e.type_=="total_tax_amount"
         "Total": total_global,         # <- se rellena desde e.type_=="total_amount"
         "Concepto": concepto_unico
     }
