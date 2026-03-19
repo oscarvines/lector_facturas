@@ -128,32 +128,33 @@ if st.session_state.resultados is not None:
             }
         )
 
-        # --- ACTUALIZACIÓN CONTROLADA ---
-        # Usamos el índice original para actualizar sin romper el estado
-        for _, row in edited_df.iterrows():
+        # --- SINCRONIZACIÓN COMPLETA (evita doble edición) ---
+        # Eliminamos filas actuales de la factura y reconstruimos desde el editor
+        st.session_state.lineas_df = st.session_state.lineas_df[
+            st.session_state.lineas_df["id_factura"] != factura_sel
+        ]
 
-            # --- FILA NUEVA ---
-            if pd.isna(row["index"]):
-                new_idx = len(st.session_state.lineas_df)
-                st.session_state.lineas_df.loc[new_idx] = {
-                    "id_linea": f"{factura_sel}_{new_idx}",
-                    "id_factura": factura_sel,
-                    "proveedor": row.get("proveedor", ""),
-                    "cliente": row.get("cliente", ""),
-                    "descripcion": row.get("descripcion", ""),
-                    "cantidad": row.get("cantidad", 0),
-                    "precio_unitario": row.get("precio_unitario", 0),
-                    "importe": row.get("importe", 0),
-                    "unidad": row.get("unidad", ""),
-                    "aceptada": row.get("aceptada", True),
-                    "confidence": 1.0
-                }
+        nuevas_filas = []
 
-            # --- FILA EXISTENTE ---
-            else:
-                idx = int(row["index"])
-                for col in ["descripcion", "cantidad", "precio_unitario", "importe", "unidad", "aceptada"]:
-                    st.session_state.lineas_df.loc[idx, col] = row[col]
+        for i, row in edited_df.iterrows():
+            nuevas_filas.append({
+                "id_linea": f"{factura_sel}_{i}",
+                "id_factura": factura_sel,
+                "proveedor": row.get("proveedor", ""),
+                "cliente": row.get("cliente", ""),
+                "descripcion": row.get("descripcion", ""),
+                "cantidad": row.get("cantidad", 0),
+                "precio_unitario": row.get("precio_unitario", 0),
+                "importe": row.get("importe", 0),
+                "unidad": row.get("unidad", ""),
+                "aceptada": row.get("aceptada", True),
+                "confidence": row.get("confidence", 1.0)
+            })
+
+        st.session_state.lineas_df = pd.concat(
+            [st.session_state.lineas_df, pd.DataFrame(nuevas_filas)],
+            ignore_index=True
+        )
 
         # Recalcular el total aceptado solo para esta factura
         suma_aceptadas = edited_df.loc[edited_df["aceptada"] == True, "importe"].sum()
