@@ -1,25 +1,3 @@
-"""
-Streamlit application for processing and reviewing PDF invoices.
-
-This module provides a frontend for uploading PDF invoices, invoking
-Google Document AI to extract structured data, reviewing line-item
-details interactively, and exporting the results to Excel.  It
-leverages the processing logic defined in ``procesador_facturas.py``.
-
-Usage:
-    Run the app with ``streamlit run lectorfacturas/app_lectorfacturas.py``.
-
-The UI workflow consists of:
-
-1. Upload one or more PDF files containing invoices.
-2. Click the "Procesar" button to extract data.
-3. View a table of extracted invoices and select a specific invoice to
-   see its line items.
-4. Edit the ``aceptada`` checkbox to include/exclude line items from
-   the accepted total.
-5. Download the results as an Excel file with separate sheets for
-   invoices and lines.
-"""
 
 import io
 import json
@@ -28,7 +6,8 @@ import pandas as pd
 from google.oauth2 import service_account
 from google.cloud import documentai_v1 as documentai
 
-from .procesador_facturas import init_docai_client, procesar_archivo
+# Import sin paquete (compatible con Streamlit / ejecución directa)
+from procesador_facturas import init_docai_client, procesar_archivo
 
 # --- CONFIGURACIÓN ---
 PROJECT_ID = "772723410003"
