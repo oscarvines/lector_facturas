@@ -111,6 +111,11 @@ if st.session_state.resultados is not None:
                 "confidence",
                 "eliminar",
             ]
+            # Asegurar que todas las columnas existen antes de seleccionar
+            for col in columnas_editor:
+                if col not in df_reset.columns:
+                    df_reset[col] = None
+
             df_lineas_sel = df_reset[columnas_editor].reset_index(drop=True)
 
             # --- LIMPIEZA PARA EVITAR None EN NUEVAS FILAS ---
@@ -170,6 +175,11 @@ if st.session_state.resultados is not None:
             "confidence",
             "eliminar",
         ]
+
+        # Asegurar columnas antes de seleccionar
+        for col in columnas_editor:
+            if col not in df_lineas_sel.columns:
+                df_lineas_sel[col] = None
 
         df_lineas_sel = df_lineas_sel[columnas_editor].reset_index(drop=True)
 
