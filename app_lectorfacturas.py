@@ -98,8 +98,6 @@ if st.session_state.resultados is not None:
                 st.session_state.lineas_df["id_factura"] == factura_sel
             ].copy()
             columnas_editor = [
-                "id_linea",
-                "id_factura",
                 "proveedor",
                 "cliente",
                 "descripcion",
@@ -138,10 +136,12 @@ if st.session_state.resultados is not None:
             if "eliminar" in df_lineas_sel.columns:
                 df_lineas_sel["eliminar"] = df_lineas_sel["eliminar"].astype(bool)
 
+
             st.session_state[editor_key] = df_lineas_sel
 
     if factura_sel:
         st.subheader("📦 Líneas de la factura seleccionada (editable)")
+        st.caption(f"Factura seleccionada: {factura_sel}. Las columnas id_factura e id_linea se asignan automáticamente al guardar.")
 
         # --- SUMATORIO ACTUAL DE LÍNEAS ---
         total_lineas_actual = st.session_state.lineas_df[
@@ -162,8 +162,6 @@ if st.session_state.resultados is not None:
         # Buffer estable para edición: evita el efecto de tener que editar dos veces
         editor_key = f"editor_buffer_{factura_sel}"
         columnas_editor = [
-            "id_linea",
-            "id_factura",
             "proveedor",
             "cliente",
             "descripcion",
@@ -183,6 +181,27 @@ if st.session_state.resultados is not None:
 
         df_lineas_sel = df_lineas_sel[columnas_editor].reset_index(drop=True)
 
+        # --- LIMPIEZA PARA EVITAR None EN NUEVAS FILAS (SIEMPRE) ---
+        df_lineas_sel = df_lineas_sel.fillna({
+            "proveedor": "",
+            "cliente": "",
+            "descripcion": "",
+            "cantidad": 0,
+            "precio_unitario": 0,
+            "importe": 0,
+            "unidad": "",
+            "aceptada": True,
+            "confidence": 1.0,
+            "eliminar": False,
+        })
+
+        # Asegurar tipos correctos SIEMPRE
+        if "aceptada" in df_lineas_sel.columns:
+            df_lineas_sel["aceptada"] = df_lineas_sel["aceptada"].astype(bool)
+        if "eliminar" in df_lineas_sel.columns:
+            df_lineas_sel["eliminar"] = df_lineas_sel["eliminar"].astype(bool)
+
+
         if editor_key not in st.session_state:
             st.session_state[editor_key] = df_lineas_sel
 
@@ -194,8 +213,6 @@ if st.session_state.resultados is not None:
                 num_rows="dynamic",
                 hide_index=True,
                 column_config={
-                    "id_linea": st.column_config.TextColumn(disabled=True),
-                    "id_factura": st.column_config.TextColumn(disabled=True),
                     "proveedor": st.column_config.TextColumn(),
                     "cliente": st.column_config.TextColumn(),
                     "descripcion": st.column_config.TextColumn(),
@@ -203,8 +220,8 @@ if st.session_state.resultados is not None:
                     "precio_unitario": st.column_config.NumberColumn(),
                     "importe": st.column_config.NumberColumn(),
                     "unidad": st.column_config.TextColumn(),
-                    "aceptada": st.column_config.CheckboxColumn(default=True),
-                    "eliminar": st.column_config.CheckboxColumn(default=False),
+                    "aceptada": st.column_config.CheckboxColumn(default=True, required=True),
+                    "eliminar": st.column_config.CheckboxColumn(default=False, required=True),
                     "confidence": st.column_config.NumberColumn(disabled=True),
                 },
             )
@@ -220,7 +237,7 @@ if st.session_state.resultados is not None:
                     continue
 
                 nuevas_filas.append({
-                    "id_linea": row.get("id_linea") or f"{factura_sel}_{i}",
+                    "id_linea": f"{factura_sel}_{i}",
                     "id_factura": factura_sel,
                     "proveedor": row.get("proveedor", ""),
                     "cliente": row.get("cliente", ""),
@@ -248,6 +265,11 @@ if st.session_state.resultados is not None:
 
             if "eliminar" not in df_nuevas.columns:
                 df_nuevas["eliminar"] = False
+
+            # El buffer del editor no muestra id_linea ni id_factura; solo se guardan en lineas_df
+            for col in columnas_editor:
+                if col not in df_nuevas.columns:
+                    df_nuevas[col] = None
 
             st.session_state[editor_key] = df_nuevas[columnas_editor]
 
