@@ -1,4 +1,3 @@
-
 import io
 import json
 import streamlit as st
@@ -90,17 +89,72 @@ if st.session_state.resultados is not None:
 
     if factura_sel:
         st.subheader("📦 Líneas de la factura seleccionada (editable)")
+
+        # --- SUMATORIO ACTUAL DE LÍNEAS ---
+        total_lineas_actual = st.session_state.lineas_df[
+            (st.session_state.lineas_df["id_factura"] == factura_sel) &
+            (st.session_state.lineas_df["aceptada"] == True)
+        ]["importe"].sum()
+
+        st.metric(
+            label="💰 Total líneas aceptadas (actual)",
+            value=f"{total_lineas_actual:.2f}"
+        )
+
         # Filtrar las líneas por la factura seleccionada
         df_lineas_sel = st.session_state.lineas_df[
             st.session_state.lineas_df["id_factura"] == factura_sel
-        ]
-        # Mostrar el editor de datos solo para las líneas seleccionadas
-        edited_df = st.data_editor(df_lineas_sel, key=f"editor_{factura_sel}")
-        # Actualizar la tabla global de líneas con los cambios
-        # Find indices of the selected lines in the global DataFrame
-        mask = st.session_state.lineas_df["id_factura"] == factura_sel
-        # Use DataFrame assignment to update only the relevant rows
-        st.session_state.lineas_df.loc[mask, :] = edited_df.values
+        ].copy()
+
+        # Asegurar índice estable (clave para evitar doble click / rerun raro)
+        df_lineas_sel = df_lineas_sel.reset_index()
+
+        edited_df = st.data_editor(
+            df_lineas_sel,
+            key=f"editor_{factura_sel}",
+            use_container_width=True,
+            num_rows="dynamic",
+            column_config={
+                "index": st.column_config.NumberColumn(disabled=True),
+                "id_linea": st.column_config.TextColumn(disabled=True),
+                "id_factura": st.column_config.TextColumn(disabled=True),
+                "confidence": st.column_config.NumberColumn(disabled=True),
+                "descripcion": st.column_config.TextColumn(),
+                "cantidad": st.column_config.NumberColumn(),
+                "precio_unitario": st.column_config.NumberColumn(),
+                "importe": st.column_config.NumberColumn(),
+                "unidad": st.column_config.TextColumn(),
+                "aceptada": st.column_config.CheckboxColumn()
+            }
+        )
+
+        # --- ACTUALIZACIÓN CONTROLADA ---
+        # Usamos el índice original para actualizar sin romper el estado
+        for _, row in edited_df.iterrows():
+
+            # --- FILA NUEVA ---
+            if pd.isna(row["index"]):
+                new_idx = len(st.session_state.lineas_df)
+                st.session_state.lineas_df.loc[new_idx] = {
+                    "id_linea": f"{factura_sel}_{new_idx}",
+                    "id_factura": factura_sel,
+                    "proveedor": row.get("proveedor", ""),
+                    "cliente": row.get("cliente", ""),
+                    "descripcion": row.get("descripcion", ""),
+                    "cantidad": row.get("cantidad", 0),
+                    "precio_unitario": row.get("precio_unitario", 0),
+                    "importe": row.get("importe", 0),
+                    "unidad": row.get("unidad", ""),
+                    "aceptada": row.get("aceptada", True),
+                    "confidence": 1.0
+                }
+
+            # --- FILA EXISTENTE ---
+            else:
+                idx = int(row["index"])
+                for col in ["descripcion", "cantidad", "precio_unitario", "importe", "unidad", "aceptada"]:
+                    st.session_state.lineas_df.loc[idx, col] = row[col]
+
         # Recalcular el total aceptado solo para esta factura
         suma_aceptadas = edited_df.loc[edited_df["aceptada"] == True, "importe"].sum()
         # Actualizar el DataFrame de facturas
