@@ -7,7 +7,7 @@ import json
 import re
 from google.oauth2 import service_account
 from google.cloud import documentai_v1 as documentai
-from PyPDF2 import PdfReader, PdfWriter  # Necesario para la V3
+from PyPDF2 import PdfReader, PdfWriter
 from procesador_facturas import init_docai_client, procesar_archivo
 
 # --- CONFIGURACIÓN ---
@@ -25,7 +25,7 @@ processor_name = f"projects/{PROJECT_ID}/locations/{LOCATION}/processors/{PROCES
 # --- STREAMLIT UI (Se mantiene similar pero con la nueva lógica) ---
 
 st.set_page_config(page_title="Lector Facturas V3", layout="wide")
-st.title("📄 Lector de Facturas Pro (V3 - Ahorro de Costes)")
+st.title("📄 Lector de Facturas Pro (V4 - )")
 
 if "uploaded_files_data" not in st.session_state:
     st.session_state.uploaded_files_data = {} # {filename: bytes}
