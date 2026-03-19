@@ -87,6 +87,31 @@ if st.session_state.resultados is not None:
         factura_ids,
     ) if factura_ids else None
 
+    if "factura_sel_anterior" not in st.session_state:
+        st.session_state.factura_sel_anterior = None
+
+    if factura_sel != st.session_state.factura_sel_anterior:
+        st.session_state.factura_sel_anterior = factura_sel
+        if factura_sel:
+            editor_key = f"editor_buffer_{factura_sel}"
+            df_reset = st.session_state.lineas_df[
+                st.session_state.lineas_df["id_factura"] == factura_sel
+            ].copy()
+            columnas_editor = [
+                "id_linea",
+                "id_factura",
+                "proveedor",
+                "cliente",
+                "descripcion",
+                "cantidad",
+                "precio_unitario",
+                "importe",
+                "unidad",
+                "aceptada",
+                "confidence",
+            ]
+            st.session_state[editor_key] = df_reset[columnas_editor].reset_index(drop=True)
+
     if factura_sel:
         st.subheader("📦 Líneas de la factura seleccionada (editable)")
 
@@ -106,65 +131,96 @@ if st.session_state.resultados is not None:
             st.session_state.lineas_df["id_factura"] == factura_sel
         ].copy()
 
-        # Asegurar índice estable (clave para evitar doble click / rerun raro)
-        df_lineas_sel = df_lineas_sel.reset_index()
-
-        edited_df = st.data_editor(
-            df_lineas_sel,
-            key=f"editor_{factura_sel}",
-            use_container_width=True,
-            num_rows="dynamic",
-            column_config={
-                "index": st.column_config.NumberColumn(disabled=True),
-                "id_linea": st.column_config.TextColumn(disabled=True),
-                "id_factura": st.column_config.TextColumn(disabled=True),
-                "confidence": st.column_config.NumberColumn(disabled=True),
-                "descripcion": st.column_config.TextColumn(),
-                "cantidad": st.column_config.NumberColumn(),
-                "precio_unitario": st.column_config.NumberColumn(),
-                "importe": st.column_config.NumberColumn(),
-                "unidad": st.column_config.TextColumn(),
-                "aceptada": st.column_config.CheckboxColumn()
-            }
-        )
-
-        # --- SINCRONIZACIÓN COMPLETA (evita doble edición) ---
-        # Eliminamos filas actuales de la factura y reconstruimos desde el editor
-        st.session_state.lineas_df = st.session_state.lineas_df[
-            st.session_state.lineas_df["id_factura"] != factura_sel
+        # Buffer estable para edición: evita el efecto de tener que editar dos veces
+        editor_key = f"editor_buffer_{factura_sel}"
+        columnas_editor = [
+            "id_linea",
+            "id_factura",
+            "proveedor",
+            "cliente",
+            "descripcion",
+            "cantidad",
+            "precio_unitario",
+            "importe",
+            "unidad",
+            "aceptada",
+            "confidence",
         ]
 
-        nuevas_filas = []
+        df_lineas_sel = df_lineas_sel[columnas_editor].reset_index(drop=True)
 
-        for i, row in edited_df.iterrows():
-            nuevas_filas.append({
-                "id_linea": f"{factura_sel}_{i}",
-                "id_factura": factura_sel,
-                "proveedor": row.get("proveedor", ""),
-                "cliente": row.get("cliente", ""),
-                "descripcion": row.get("descripcion", ""),
-                "cantidad": row.get("cantidad", 0),
-                "precio_unitario": row.get("precio_unitario", 0),
-                "importe": row.get("importe", 0),
-                "unidad": row.get("unidad", ""),
-                "aceptada": row.get("aceptada", True),
-                "confidence": row.get("confidence", 1.0)
-            })
+        if editor_key not in st.session_state:
+            st.session_state[editor_key] = df_lineas_sel
 
-        st.session_state.lineas_df = pd.concat(
-            [st.session_state.lineas_df, pd.DataFrame(nuevas_filas)],
-            ignore_index=True
-        )
+        with st.form(key=f"form_lineas_{factura_sel}"):
+            edited_df = st.data_editor(
+                st.session_state[editor_key],
+                key=f"editor_{factura_sel}",
+                use_container_width=True,
+                num_rows="dynamic",
+                hide_index=True,
+                column_config={
+                    "id_linea": st.column_config.TextColumn(disabled=True),
+                    "id_factura": st.column_config.TextColumn(disabled=True),
+                    "proveedor": st.column_config.TextColumn(),
+                    "cliente": st.column_config.TextColumn(),
+                    "descripcion": st.column_config.TextColumn(),
+                    "cantidad": st.column_config.NumberColumn(),
+                    "precio_unitario": st.column_config.NumberColumn(),
+                    "importe": st.column_config.NumberColumn(),
+                    "unidad": st.column_config.TextColumn(),
+                    "aceptada": st.column_config.CheckboxColumn(),
+                    "confidence": st.column_config.NumberColumn(disabled=True),
+                },
+            )
 
-        # Recalcular el total aceptado solo para esta factura
-        suma_aceptadas = edited_df.loc[edited_df["aceptada"] == True, "importe"].sum()
-        # Actualizar el DataFrame de facturas
-        st.session_state.resultados.loc[
+            aplicar_cambios = st.form_submit_button("💾 Aplicar cambios en líneas")
+
+        if aplicar_cambios:
+            nuevas_filas = []
+            for i, row in edited_df.iterrows():
+                nuevas_filas.append({
+                    "id_linea": row.get("id_linea") or f"{factura_sel}_{i}",
+                    "id_factura": factura_sel,
+                    "proveedor": row.get("proveedor", ""),
+                    "cliente": row.get("cliente", ""),
+                    "descripcion": row.get("descripcion", ""),
+                    "cantidad": row.get("cantidad", 0),
+                    "precio_unitario": row.get("precio_unitario", 0),
+                    "importe": row.get("importe", 0),
+                    "unidad": row.get("unidad", ""),
+                    "aceptada": row.get("aceptada", True),
+                    "confidence": row.get("confidence", 1.0),
+                })
+
+            # Reemplazar solo las líneas de la factura seleccionada
+            st.session_state.lineas_df = st.session_state.lineas_df[
+                st.session_state.lineas_df["id_factura"] != factura_sel
+            ]
+            st.session_state.lineas_df = pd.concat(
+                [st.session_state.lineas_df, pd.DataFrame(nuevas_filas)],
+                ignore_index=True,
+            )
+
+            # Actualizar buffer del editor con el estado ya consolidado
+            st.session_state[editor_key] = pd.DataFrame(nuevas_filas)[columnas_editor]
+
+            # Recalcular total aceptado solo para esta factura
+            suma_aceptadas = pd.DataFrame(nuevas_filas).loc[
+                pd.DataFrame(nuevas_filas)["aceptada"] == True, "importe"
+            ].sum()
+            st.session_state.resultados.loc[
+                st.session_state.resultados["id_factura"] == factura_sel, "total_aceptado"
+            ] = suma_aceptadas
+
+            st.rerun()
+
+        # Mostrar el total aceptado persistido
+        total_persistido = st.session_state.resultados.loc[
             st.session_state.resultados["id_factura"] == factura_sel, "total_aceptado"
-        ] = suma_aceptadas
-        # Mostrar las líneas seleccionadas para referencia
+        ].iloc[0]
         st.markdown(
-            f"**Total aceptado** para la factura `{factura_sel}`: {suma_aceptadas:.2f}"
+            f"**Total aceptado** para la factura `{factura_sel}`: {float(total_persistido):.2f}"
         )
 
     # Botón para descargar los datos en Excel
