@@ -8,6 +8,7 @@ import re
 from google.oauth2 import service_account
 from google.cloud import documentai_v1 as documentai
 from PyPDF2 import PdfReader, PdfWriter  # Necesario para la V3
+from procesador_facturas import init_docai_client, procesar_archivo
 
 # --- CONFIGURACIÓN ---
 PROJECT_ID   = "772723410003"
@@ -17,92 +18,9 @@ PROCESSOR_ID = "dff8117c158462cd" # Usando tu nuevo procesador de la V3
 # --- Autenticación con st.secrets ---
 info = json.loads(st.secrets["google"]["credentials"])
 creds = service_account.Credentials.from_service_account_info(info)
-docai_client = documentai.DocumentProcessorServiceClient(credentials=creds)
+docai_client = init_docai_client(creds)
 PROCESSOR_VERSION_ID = "e4fb17a2603c6087"
 processor_name = f"projects/{PROJECT_ID}/locations/{LOCATION}/processors/{PROCESSOR_ID}/processorVersions/{PROCESSOR_VERSION_ID}"
-
-# --- FUNCIONES LÓGICA V3 ---
-
-def parse_amount(valor: str) -> float:
-    if not valor: return 0.0
-    s = re.sub(r"[^\d,.\-]", "", str(valor))
-    if not s: return 0.0
-    if "," in s and "." in s:
-        s = s.replace(".", "").replace(",", ".") if s.rfind(",") > s.rfind(".") else s.replace(",", "")
-    elif "," in s: s = s.replace(",", ".")
-    try: return round(float(s), 2)
-    except ValueError: return 0.0
-
-def es_justificante_local(texto):
-    """Lógica de ahorro V3: Detecta justificantes gratis."""
-    patrones = [
-        r"detalle de orden", r"remesa", r"cuenta ordenante", r"cuenta beneficiario",
-        r"justificante de pago", r"transferencia realizada", r"ejecutada", r"abono"
-    ]
-    return any(re.search(p, texto.lower()) for p in patrones)
-
-def llamar_a_document_ai(pdf_bytes):
-    raw_doc = documentai.RawDocument(content=pdf_bytes, mime_type="application/pdf")
-    req = documentai.ProcessRequest(name=processor_name, raw_document=raw_doc)
-    res = docai_client.process_document(request=req)
-    return res.document
-
-# --- LÓGICA DE PROCESAMIENTO POR PÁGINAS (V3) ---
-
-def procesar_archivo_v3(file_bytes, filename):
-    pdf_reader = PdfReader(io.BytesIO(file_bytes))
-    resultados_archivo = []
-    
-    for i, page in enumerate(pdf_reader.pages):
-        texto_local = page.extract_text() or ""
-        ref = f"{filename} (pág {i+1})"
-        
-        # 1. Filtro de Ahorro
-        if es_justificante_local(texto_local):
-            continue # Salta a la siguiente página sin llamar a Google
-            
-        # 2. Llamada a Google
-        writer = PdfWriter()
-        writer.add_page(page)
-        with io.BytesIO() as buf:
-            writer.write(buf)
-            doc = llamar_a_document_ai(buf.getvalue())
-            
-            data = {
-                "Archivo": ref, "Proveedor": "", "CIF_Proveedor": "",
-                "Cliente": "", "CIF_Cliente": "", "Fecha": "", "Nº Factura": "",
-                "Base Imponible": 0.0, "IVA": 0.0, "Total": 0.0, "Concepto": "", "Validación": ""
-            }
-
-            base_c, iva_c, total_c, descr = [], [], [], []
-
-            for e in doc.entities:
-                t, text = e.type_, e.mention_text or ""
-                if t == "supplier_name": data["Proveedor"] = text.replace("\n", " ")
-                elif t == "supplier_tax_id": data["CIF_Proveedor"] = text
-                elif t == "customer_name": data["Cliente"] = text.replace("\n", " ")
-                elif t == "customer_tax_id": data["CIF_Cliente"] = text
-                elif t == "invoice_date": data["Fecha"] = text
-                elif t == "invoice_id": data["Nº Factura"] = text
-                elif t == "total_amount": total_c.append(text)
-                elif t == "net_amount": base_c.append(text)
-                elif t == "total_tax_amount": iva_c.append(text)
-                elif t == "line_item":
-                    for prop in e.properties:
-                        if prop.type_ == "line_item/description": descr.append(prop.mention_text)
-
-            data["Base Imponible"] = max([parse_amount(v) for v in base_c] or [0.0])
-            data["IVA"] = max([parse_amount(v) for v in iva_c] or [0.0])
-            data["Total"] = max([parse_amount(v) for v in total_c] or [0.0])
-            data["Concepto"] = " | ".join(filter(None, [d.replace("\n", " ") for d in descr]))
-
-            # 3. Validación Contable
-            suma = round(data["Base Imponible"] + data["IVA"], 2)
-            data["Validación"] = "CORRECTA" if data["Total"] > 0 and abs(suma - data["Total"]) < 0.05 else "REVISAR"
-            
-            resultados_archivo.append(data)
-            
-    return resultados_archivo
 
 # --- STREAMLIT UI (Se mantiene similar pero con la nueva lógica) ---
 
@@ -127,26 +45,43 @@ if st.button("🚀 Procesar con Lógica V3"):
     
     with st.spinner("Analizando y filtrando justificantes..."):
         for i, (name, b) in enumerate(st.session_state.uploaded_files_data.items()):
-            res_pdf = procesar_archivo_v3(b, name)
-            todos_los_resultados.extend(res_pdf)
+            facturas, lineas = procesar_archivo(b, name, docai_client, processor_name)
+            todos_los_resultados.extend(facturas)
+
+            if "lineas" not in st.session_state:
+                st.session_state.lineas = []
+
+            st.session_state.lineas.extend(lineas)
             progreso.progress((i + 1) / total_archivos)
             
     if todos_los_resultados:
-        df = pd.DataFrame(todos_los_resultados)
-        st.session_state.resultados = df
-        st.success(f"Proceso finalizado. Se extrajeron {len(df)} filas útiles.")
+        df_facturas = pd.DataFrame(todos_los_resultados)
+        df_lineas = pd.DataFrame(st.session_state.lineas)
+
+        st.session_state.resultados = df_facturas
+        st.session_state.lineas_df = df_lineas
+        st.success(f"Proceso finalizado. Se extrajeron {len(df_facturas)} filas útiles.")
     else:
         st.warning("No se encontraron facturas válidas (¿eran todos justificantes?)")
 
 if "resultados" in st.session_state and st.session_state.resultados is not None:
-    # Mostrar tabla con colores
-    st.dataframe(st.session_state.resultados.style.applymap(
-        lambda x: 'background-color: #ffcccc' if x == 'REVISAR' else '', subset=['Validación']
-    ))
+    st.subheader("📄 Facturas")
+    st.dataframe(st.session_state.resultados)
+
+    st.subheader("📦 Líneas (editable)")
+    st.session_state.lineas_df = st.data_editor(st.session_state.lineas_df)
+
+    # Recalcular total aceptado
+    df_lineas_filtrado = st.session_state.lineas_df[st.session_state.lineas_df["aceptada"] == True]
+    totales = df_lineas_filtrado.groupby("id_factura")["importe"].sum()
+
+    st.session_state.resultados["total_aceptado"] = st.session_state.resultados["id_factura"].map(totales).fillna(0)
     
     # Descarga Excel
     towrite = io.BytesIO()
-    st.session_state.resultados.to_excel(towrite, index=False, engine="openpyxl")
+    with pd.ExcelWriter(towrite, engine="openpyxl") as writer:
+        st.session_state.resultados.to_excel(writer, sheet_name="Facturas", index=False)
+        st.session_state.lineas_df.to_excel(writer, sheet_name="Lineas", index=False)
     st.download_button(
         label="⬇️ Descargar Excel V3",
         data=towrite.getvalue(),
@@ -157,4 +92,6 @@ if "resultados" in st.session_state and st.session_state.resultados is not None:
 if st.button("🗑️ Limpiar Todo"):
     st.session_state.uploaded_files_data = {}
     st.session_state.resultados = None
+    st.session_state.lineas = []
+    st.session_state.lineas_df = None
     st.rerun()
