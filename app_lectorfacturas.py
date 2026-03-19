@@ -109,8 +109,31 @@ if st.session_state.resultados is not None:
                 "unidad",
                 "aceptada",
                 "confidence",
+                "eliminar",
             ]
-            st.session_state[editor_key] = df_reset[columnas_editor].reset_index(drop=True)
+            df_lineas_sel = df_reset[columnas_editor].reset_index(drop=True)
+
+            # --- LIMPIEZA PARA EVITAR None EN NUEVAS FILAS ---
+            df_lineas_sel = df_lineas_sel.fillna({
+                "proveedor": "",
+                "cliente": "",
+                "descripcion": "",
+                "cantidad": 0,
+                "precio_unitario": 0,
+                "importe": 0,
+                "unidad": "",
+                "aceptada": True,
+                "confidence": 1.0,
+                "eliminar": False,
+            })
+
+            # Asegurar tipos correctos
+            if "aceptada" in df_lineas_sel.columns:
+                df_lineas_sel["aceptada"] = df_lineas_sel["aceptada"].astype(bool)
+            if "eliminar" in df_lineas_sel.columns:
+                df_lineas_sel["eliminar"] = df_lineas_sel["eliminar"].astype(bool)
+
+            st.session_state[editor_key] = df_lineas_sel
 
     if factura_sel:
         st.subheader("📦 Líneas de la factura seleccionada (editable)")
@@ -145,6 +168,7 @@ if st.session_state.resultados is not None:
             "unidad",
             "aceptada",
             "confidence",
+            "eliminar",
         ]
 
         df_lineas_sel = df_lineas_sel[columnas_editor].reset_index(drop=True)
@@ -169,7 +193,8 @@ if st.session_state.resultados is not None:
                     "precio_unitario": st.column_config.NumberColumn(),
                     "importe": st.column_config.NumberColumn(),
                     "unidad": st.column_config.TextColumn(),
-                    "aceptada": st.column_config.CheckboxColumn(),
+                    "aceptada": st.column_config.CheckboxColumn(default=True),
+                    "eliminar": st.column_config.CheckboxColumn(default=False),
                     "confidence": st.column_config.NumberColumn(disabled=True),
                 },
             )
@@ -179,6 +204,11 @@ if st.session_state.resultados is not None:
         if aplicar_cambios:
             nuevas_filas = []
             for i, row in edited_df.iterrows():
+
+                # Si está marcada para eliminar, la saltamos
+                if row.get("eliminar", False):
+                    continue
+
                 nuevas_filas.append({
                     "id_linea": row.get("id_linea") or f"{factura_sel}_{i}",
                     "id_factura": factura_sel,
@@ -191,6 +221,7 @@ if st.session_state.resultados is not None:
                     "unidad": row.get("unidad", ""),
                     "aceptada": row.get("aceptada", True),
                     "confidence": row.get("confidence", 1.0),
+                    "eliminar": False,
                 })
 
             # Reemplazar solo las líneas de la factura seleccionada
@@ -203,7 +234,12 @@ if st.session_state.resultados is not None:
             )
 
             # Actualizar buffer del editor con el estado ya consolidado
-            st.session_state[editor_key] = pd.DataFrame(nuevas_filas)[columnas_editor]
+            df_nuevas = pd.DataFrame(nuevas_filas)
+
+            if "eliminar" not in df_nuevas.columns:
+                df_nuevas["eliminar"] = False
+
+            st.session_state[editor_key] = df_nuevas[columnas_editor]
 
             # Recalcular total aceptado solo para esta factura
             suma_aceptadas = pd.DataFrame(nuevas_filas).loc[
