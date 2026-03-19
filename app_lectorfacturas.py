@@ -18,7 +18,8 @@ PROCESSOR_ID = "dff8117c158462cd" # Usando tu nuevo procesador de la V3
 info = json.loads(st.secrets["google"]["credentials"])
 creds = service_account.Credentials.from_service_account_info(info)
 docai_client = documentai.DocumentProcessorServiceClient(credentials=creds)
-processor_name = f"projects/{PROJECT_ID}/locations/{LOCATION}/processors/{PROCESSOR_ID}"
+PROCESSOR_VERSION_ID = "e4fb17a2603c6087"
+processor_name = f"projects/{PROJECT_ID}/locations/{LOCATION}/processors/{PROCESSOR_ID}/processorVersions/{PROCESSOR_VERSION_ID}"
 
 # --- FUNCIONES LÓGICA V3 ---
 
