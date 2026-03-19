@@ -273,13 +273,21 @@ if st.session_state.resultados is not None:
 
             st.session_state[editor_key] = df_nuevas[columnas_editor]
 
-            # Recalcular total aceptado solo para esta factura
-            suma_aceptadas = pd.DataFrame(nuevas_filas).loc[
-                pd.DataFrame(nuevas_filas)["aceptada"] == True, "importe"
-            ].sum()
-            st.session_state.resultados.loc[
-                st.session_state.resultados["id_factura"] == factura_sel, "total_aceptado"
-            ] = suma_aceptadas
+            # --- RECÁLCULO GLOBAL CORRECTO ---
+            df_lineas_validas = st.session_state.lineas_df[
+                st.session_state.lineas_df["aceptada"] == True
+            ]
+
+            # Asegurar que importe es numérico
+            df_lineas_validas["importe"] = pd.to_numeric(
+                df_lineas_validas["importe"], errors="coerce"
+            ).fillna(0)
+
+            totales = df_lineas_validas.groupby("id_factura")["importe"].sum()
+
+            st.session_state.resultados["total_aceptado"] = (
+                st.session_state.resultados["id_factura"].map(totales).fillna(0)
+            )
 
             st.rerun()
 
